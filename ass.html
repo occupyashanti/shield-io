@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Number Sequence Predictor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .toast {
+            visibility: hidden;
+            min-width: 250px;
+            margin-left: -125px;
+            background-color: #333;
+            color: #fff;
+            text-align: center;
+            border-radius: 8px;
+            padding: 16px;
+            position: fixed;
+            z-index: 1;
+            left: 50%;
+            bottom: 30px;
+            opacity: 0;
+            transition: visibility 0s, opacity 0.5s linear;
+        }
+        .toast.show {
+            visibility: visible;
+            opacity: 1;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-800">
+
+    <div class="container mx-auto p-4 md:p-8 max-w-4xl">
+        <header class="text-center mb-8">
+            <h1 class="text-3xl md:text-4xl font-bold text-gray-900">Number Sequence Predictor</h1>
+            <p class="mt-2 text-md text-gray-600">An interactive tool to forecast number sets based on historical data.</p>
+        </header>
+
+        <main class="bg-white p-6 md:p-8 rounded-2xl shadow-lg">
+            
+            <!-- Step 1: Input Data -->
+            <div class="mb-8">
+                <h2 class="text-xl font-semibold mb-3 text-gray-800">Step 1: Provide Historical Data</h2>
+                <p class="text-gray-600 mb-4">
+                    Enter your historical sequences below, one per line. Each sequence should be a set of numbers separated by hyphens (e.g., <code class="bg-gray-100 p-1 rounded-md text-sm">3393-4836-7639-1434-2242</code>).
+                    You need at least 4 rows to train the ML model.
+                </p>
+                <textarea id="history-input" class="w-full h-48 p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition" placeholder="3393-4836-7639-1434-2242&#10;2472-5381-3766-5369-2175&#10;..."></textarea>
+                <div class="mt-2 text-sm text-gray-500">
+                    <span id="rowCount">0</span> rows detected.
+                </div>
+                <button id="clear-btn" class="mt-4 bg-gray-200 text-gray-700 font-semibold py-2 px-4 rounded-lg hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-400 transition w-full">Clear/Reset</button>
+            </div>
+
+            <!-- Step 2: Select Model -->
+            <div class="mb-8">
+                <h2 class="text-xl font-semibold mb-3 text-gray-800">Step 2: Choose a Prediction Model</h2>
+                <p class="text-gray-600 mb-4">Select the algorithm to generate the forecast. Baselines are simple, while the Linear Regressor uses past trends.</p>
+                <select id="model-select" class="w-full p-3 bg-gray-50 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                    <option value="LinearReg">Linear Regression (Lag Features)</option>
+                    <option value="Persistence">Persistence (Predict Last Row)</option>
+                    <option value="MostFreqPerPos">Most Frequent (Per Position)</option>
+                    <option value="RandomUniform">Random Uniform (0-9999)</option>
+                </select>
+            </div>
+
+            <!-- Step 3: Generate Prediction -->
+            <div>
+                <button id="predict-btn" class="w-full bg-blue-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-4 focus:ring-blue-300 transition-transform transform hover:scale-101">
+                    Forecast Next Sequence
+                </button>
+            </div>
+
+            <!-- Result Display -->
+            <div id="result-container" class="mt-8 pt-6 border-t border-gray-200 hidden">
+                <h2 class="text-xl font-semibold mb-4 text-gray-800">Prediction Result</h2>
+                <div class="bg-blue-50 p-6 rounded-xl text-center">
+                    <p class="text-lg text-blue-800 mb-2">The predicted next sequence is:</p>
+                    <p id="prediction-output" class="text-3xl md:text-4xl font-bold text-blue-900 tracking-wider"></p>
+                    <p id="model-used" class="text-sm text-blue-700 mt-3"></p>
+                </div>
+                <button id="export-csv-btn" class="mt-6 bg-green-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-green-700 focus:outline-none focus:ring-4 focus:ring-green-300 transition-transform transform hover:scale-101 w-full">Export to CSV</button>
+                <div class="mt-8">
+                    <canvas id="trend-chart" height="220"></canvas>
+                </div>
+            </div>
+        </main>
+
+        <footer class="text-center mt-8 text-sm text-gray-500">
+            <p>This tool is based on the logic from the provided Python notebook. Remember: for truly random processes like lotteries, prediction is not reliably possible.</p>
+        </footer>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        // --- Core Logic based on the Python script ---
+
+        // Utility to show toast messages
+        function showToast(message) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.classList.add('show');
+            setTimeout(() => {
+                toast.classList.remove('show');
+            }, 3000);
+        }
+
+        // 1. Data Parsing
+        function parseSequenceStr(seqStr, sep = "-") {
+            if (!seqStr) return [];
+            const tokens = seqStr.split(sep).map(t => t.trim()).filter(t => t !== "");
+            return tokens.map(t => parseInt(t, 10));
+        }
+
+        function parseMany(sequenceStrs) {
+            return sequenceStrs.map(s => parseSequenceStr(s)).filter(arr => arr.length > 0);
+        }
+
+        // 2. Feature Engineering (Lag Features)
+        function makeSupervised(data, n_lags = 3) {
+            if (data.length <= n_lags) return { X: [], y: [] };
+
+            const n_positions = data[0].length;
+            const X = [];
+            const y = [];
+
+            for (let i = n_lags; i < data.length; i++) {
+                const lag_features = [];
+                for (let lag = 1; lag <= n_lags; lag++) {
+                    for (let pos = 0; pos < n_positions; pos++) {
+                        lag_features.push(data[i - lag][pos]);
+                    }
+                }
+                X.push(lag_features);
+                y.push(data[i]);
+            }
+            return { X, y };
+        }
+        
+        function prepareLastX(data, n_lags = 3) {
+            if (data.length < n_lags) return null;
+            const last_slice = data.slice(-n_lags);
+            const n_positions = data[0].length;
+            const lag_features = [];
+            for (let lag = 1; lag <= n_lags; lag++) {
+                for (let pos = 0; pos < n_positions; pos++) {
+                     lag_features.push(data[n_lags - lag][pos]);
+                }
+            }
+            return [lag_features];
+        }
+
+
+        // 3. Models
+        const models = {
+            // Baseline: Predicts the last observed sequence
+            Persistence: {
+                fit: (X, y) => ({ last_row: y[y.length - 1] }),
+                predict: (modelState, X_next) => modelState.last_row
+            },
+            // Baseline: Predicts a random sequence
+            RandomUniform: {
+                fit: (X, y) => ({ n_positions: y[0].length }),
+                predict: (modelState, X_next) => {
+                    const pred = [];
+                    for (let i = 0; i < modelState.n_positions; i++) {
+                        pred.push(Math.floor(Math.random() * 10000));
+                    }
+                    return pred;
+                }
+            },
+            // Baseline: Predicts the most frequent number for each position
+            MostFreqPerPos: {
+                fit: (X, y) => {
+                    const n_positions = y[0].length;
+                    const modes = [];
+                    for (let i = 0; i < n_positions; i++) {
+                        const counts = new Map();
+                        for (let j = 0; j < y.length; j++) {
+                            const val = y[j][i];
+                            counts.set(val, (counts.get(val) || 0) + 1);
+                        }
+                        let mode;
+                        let maxCount = 0;
+                        for (const [val, count] of counts.entries()) {
+                            if (count > maxCount) {
+                                maxCount = count;
+                                mode = val;
+                            }
+                        }
+                        modes.push(mode || 0);
+                    }
+                    return { modes };
+                },
+                predict: (modelState, X_next) => modelState.modes
+            },
+            // ML Model: Linear Regression per position
+            LinearReg: {
+                fit: (X, y) => {
+                    const n_positions = y[0].length;
+                    const position_models = [];
+
+                    for (let pos = 0; pos < n_positions; pos++) {
+                        const y_pos = y.map(row => row[pos]);
+                        // Simple Gradient Descent
+                        let weights = new Array(X[0].length).fill(0);
+                        let bias = 0;
+                        const lr = 0.00001; // Increased learning rate for better convergence
+                        const epochs = 2000; // Increased epochs for more training
+
+                        for (let epoch = 0; epoch < epochs; epoch++) {
+                            for (let i = 0; i < X.length; i++) {
+                                let prediction = X[i].reduce((acc, feat, j) => acc + feat * weights[j], bias);
+                                let error = prediction - y_pos[i];
+                                
+                                bias -= lr * error;
+                                for (let j = 0; j < weights.length; j++) {
+                                    weights[j] -= lr * error * X[i][j];
+                                }
+                            }
+                        }
+                        position_models.push({ weights, bias });
+                    }
+                    return { position_models };
+                },
+                predict: (modelState, X_next) => {
+                    const prediction = [];
+                    const x_input = X_next[0];
+                    modelState.position_models.forEach(model => {
+                        let pos_pred = x_input.reduce((acc, feat, j) => acc + feat * model.weights[j], model.bias);
+                        pos_pred = Math.round(pos_pred);
+                        pos_pred = Math.max(0, Math.min(9999, pos_pred)); // Clip
+                        prediction.push(pos_pred);
+                    });
+                    return prediction;
+                }
+            }
+        };
+
+        // --- DOM Manipulation & Event Listeners ---
+        document.addEventListener('DOMContentLoaded', () => {
+            const historyInput = document.getElementById('history-input');
+            const modelSelect = document.getElementById('model-select');
+            const predictBtn = document.getElementById('predict-btn');
+            const resultContainer = document.getElementById('result-container');
+            const predictionOutput = document.getElementById('prediction-output');
+            const modelUsedOutput = document.getElementById('model-used');
+            const rowCountEl = document.getElementById('rowCount');
+            const exportCsvBtn = document.getElementById('export-csv-btn');
+            const clearBtn = document.getElementById('clear-btn');
+            // Add a container for confidence estimates
+            let confidenceEl = document.getElementById('confidence-estimates');
+            if (!confidenceEl) {
+                confidenceEl = document.createElement('div');
+                confidenceEl.id = 'confidence-estimates';
+                confidenceEl.className = 'text-sm text-blue-700 mt-2';
+                predictionOutput.parentNode.appendChild(confidenceEl);
+            }
+
+            let chartInstance = null;
+
+            // Sample data for easy testing
+            const sampleData = [
+                "8167-3932-1408-4152-5621",
+                "1823-7654-9210-3456-8790",
+                "5543-2198-7865-4321-9087",
+                "6789-1234-5678-9012-3456",
+                "3393-4836-7639-1434-2242",
+                "2472-5381-3766-5369-2175",
+                "9876-5432-1098-7654-3210",
+                "1122-3344-5566-7788-9900"
+            ];
+
+            // --- LocalStorage Persistence ---
+            const LS_KEY = 'number-sequence-history';
+            // Load from localStorage if available
+            const savedHistory = localStorage.getItem(LS_KEY);
+            if (savedHistory) {
+                historyInput.value = savedHistory;
+            } else {
+                historyInput.value = sampleData.join('\n');
+            }
+            // Update row count
+            rowCountEl.textContent = historyInput.value.split('\n').filter(line => line.trim() !== '').length;
+
+            historyInput.addEventListener('input', () => {
+                const lines = historyInput.value.split('\n').filter(line => line.trim() !== '');
+                rowCountEl.textContent = lines.length;
+                // Save to localStorage
+                localStorage.setItem(LS_KEY, historyInput.value);
+            });
+            
+            predictBtn.addEventListener('click', () => {
+                const rawHistory = historyInput.value.split('\n').filter(line => line.trim() !== '');
+                if (rawHistory.length < 2) {
+                    showToast("Please provide at least 2 rows of historical data.");
+                    return;
+                }
+
+                const data = parseMany(rawHistory);
+                const n_positions = data[0].length;
+
+                // --- Enhanced Input Validation ---
+                for (let i = 0; i < data.length; i++) {
+                    const row = data[i];
+                    if (row.length !== n_positions) {
+                        showToast(`Error: Row ${i + 1} does not have the required ${n_positions} numbers.`);
+                        return;
+                    }
+                    for (let j = 0; j < row.length; j++) {
+                        const val = row[j];
+                        if (isNaN(val)) {
+                            showToast(`Error: Row ${i + 1}, value ${j + 1} is not a number.`);
+                            return;
+                        }
+                        if (val < 0) {
+                            showToast(`Error: Row ${i + 1}, value ${j + 1} is negative. Only 0–9999 allowed.`);
+                            return;
+                        }
+                        if (val > 9999) {
+                            showToast(`Error: Row ${i + 1}, value ${j + 1} is greater than 9999. Only 0–9999 allowed.`);
+                            return;
+                        }
+                    }
+                }
+
+                const modelName = modelSelect.value;
+                const n_lags = 3;
+
+                if (modelName === 'LinearReg' && data.length < n_lags + 1) {
+                    showToast(`Linear Regression requires at least ${n_lags + 1} rows of data.`);
+                    return;
+                }
+
+                const model = models[modelName];
+                let X, y, modelState, X_next;
+                
+                // Prepare data and fit model
+                if (modelName === 'LinearReg') {
+                    const supervised = makeSupervised(data, n_lags);
+                    X = supervised.X;
+                    y = supervised.y;
+                    X_next = prepareLastX(data, n_lags);
+                    if (!X_next) {
+                         showToast(`Not enough data to create features for prediction. Need ${n_lags} rows.`);
+                         return;
+                    }
+                } else {
+                    // Baselines use all data for 'y'
+                    X = [];
+                    y = data;
+                    X_next = null; // Not needed for baseline prediction logic
+                }
+                
+                modelState = model.fit(X, y);
+                
+                // Predict
+                const prediction = model.predict(modelState, X_next);
+
+                // Display result
+                predictionOutput.textContent = prediction.map(n => String(n).padStart(4, '0')).join(' - ');
+                modelUsedOutput.textContent = `Generated using: ${modelSelect.options[modelSelect.selectedIndex].text}`;
+                // Show confidence estimates for MostFreqPerPos
+                if (modelName === 'MostFreqPerPos') {
+                    // Calculate frequencies
+                    const nRows = y.length;
+                    const nPos = y[0].length;
+                    let freqText = '<b>Confidence (frequency for each position):</b><br>';
+                    for (let i = 0; i < nPos; i++) {
+                        const val = prediction[i];
+                        let count = 0;
+                        for (let j = 0; j < nRows; j++) {
+                            if (y[j][i] === val) count++;
+                        }
+                        const percent = ((count / nRows) * 100).toFixed(1);
+                        freqText += `Pos ${i + 1}: ${val} (${percent}%)<br>`;
+                    }
+                    confidenceEl.innerHTML = freqText;
+                    confidenceEl.style.display = '';
+                } else {
+                    confidenceEl.innerHTML = '';
+                    confidenceEl.style.display = 'none';
+                }
+
+                // --- Chart Visualization ---
+                const ctx = document.getElementById('trend-chart').getContext('2d');
+                // Prepare data for chart: each position is a line
+                const allData = y.concat([prediction]);
+                const nRows = allData.length;
+                const nPos = allData[0].length;
+                const labels = [];
+                for (let i = 0; i < nRows - 1; i++) labels.push('Row ' + (i + 1));
+                labels.push('Prediction');
+                const datasets = [];
+                const colors = [
+                    '#2563eb', '#16a34a', '#f59e42', '#db2777', '#7c3aed', '#eab308', '#f43f5e', '#0ea5e9'
+                ];
+                for (let pos = 0; pos < nPos; pos++) {
+                    datasets.push({
+                        label: 'Pos ' + (pos + 1),
+                        data: allData.map(row => row[pos]),
+                        borderColor: colors[pos % colors.length],
+                        backgroundColor: 'rgba(0,0,0,0)',
+                        tension: 0.2,
+                        pointRadius: 3,
+                        pointBackgroundColor: (ctx) => ctx.dataIndex === nRows - 1 ? '#ef4444' : colors[pos % colors.length],
+                        borderWidth: 2,
+                    });
+                }
+                if (chartInstance) chartInstance.destroy();
+                chartInstance = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels,
+                        datasets
+                    },
+                    options: {
+                        responsive: true,
+                        plugins: {
+                            legend: { display: true },
+                            title: { display: false }
+                        },
+                        scales: {
+                            y: {
+                                min: 0,
+                                max: 9999,
+                                ticks: { stepSize: 1000 }
+                            }
+                        }
+                    }
+                });
+                resultContainer.classList.remove('hidden');
+            });
+
+            // Export to CSV
+            if (exportCsvBtn) {
+                exportCsvBtn.addEventListener('click', () => {
+                    const rawHistory = historyInput.value.split('\n').filter(line => line.trim() !== '');
+                    const prediction = predictionOutput.textContent;
+                    let csv = 'Input Sequences\n';
+                    csv += rawHistory.join('\n') + '\n';
+                    csv += '\nPredicted Sequence\n' + prediction + '\n';
+                    const blob = new Blob([csv], { type: 'text/csv' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'prediction_export.csv';
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                });
+            }
+            // Clear/Reset Button
+            if (clearBtn) {
+                clearBtn.addEventListener('click', () => {
+                    historyInput.value = '';
+                    rowCountEl.textContent = '0';
+                    localStorage.removeItem(LS_KEY);
+                    resultContainer.classList.add('hidden');
+                    if (chartInstance) {
+                        chartInstance.destroy();
+                        chartInstance = null;
+                    }
+                    if (confidenceEl) {
+                        confidenceEl.innerHTML = '';
+                        confidenceEl.style.display = 'none';
+                    }
+                });
+            }
+        });
+    </script>
+</body>
+</html>
